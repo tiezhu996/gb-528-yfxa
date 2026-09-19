@@ -22,6 +22,20 @@ func NewCueDefinitionRepository(db *gorm.DB, auditRepository *audit.Repository) 
 	return &CueDefinitionRepository{db: db, audit: auditRepository}
 }
 
+// WithTx reuses the repository within an existing transaction.
+func (r *CueDefinitionRepository) WithTx(tx *gorm.DB) *CueDefinitionRepository {
+	return &CueDefinitionRepository{db: tx, audit: r.audit}
+}
+
+// AllLocked returns every locked cue ordered for stable freeze reviews.
+func (r *CueDefinitionRepository) AllLocked() ([]model.CueDefinition, error) {
+	var items []model.CueDefinition
+	if err := r.db.Where("cue_status = ?", constants.CueLocked).Order("sequence_no ASC, cue_code ASC").Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list locked cue definitions: %w", err)
+	}
+	return items, nil
+}
+
 func (r *CueDefinitionRepository) List(page, pageSize int, status, search string) ([]model.CueDefinition, int64, error) {
 	query := r.db.Model(&model.CueDefinition{})
 	if status != "" {
@@ -98,27 +112,40 @@ func (r *CueDefinitionRepository) Update(item *model.CueDefinition, expectedVers
 func (r *CueDefinitionRepository) Transition(id uint, expectedVersion uint, from, to constants.CueStatus, reviewerID *uint, note string, event audit.Event) (model.CueDefinition, error) {
 	var updated model.CueDefinition
 	err := r.db.Transaction(func(tx *gorm.DB) error {
-		updates := map[string]any{"cue_status": to, "version": expectedVersion + 1, "review_note": note}
-		if to == constants.CueApproved {
-			updates["approved_by"] = reviewerID
-		}
-		if to == constants.CueDraft {
-			updates["approved_by"] = nil
-		}
-		result := tx.Model(&model.CueDefinition{}).Where("id = ? AND version = ? AND cue_status = ?", id, expectedVersion, from).Updates(updates)
-		if result.Error != nil {
-			return fmt.Errorf("transition cue: %w", result.Error)
-		}
-		if result.RowsAffected != 1 {
-			return util.Conflict("CUE_VERSION_CONFLICT", "cue state or version changed concurrently", nil)
-		}
-		if err := r.audit.WithTx(tx).Record(event); err != nil {
-			return err
-		}
-		if err := tx.First(&updated, id).Error; err != nil {
-			return fmt.Errorf("reload transitioned cue: %w", err)
-		}
-		return nil
+		return r.transitionTx(tx, &updated, id, expectedVersion, from, to, reviewerID, note, event)
 	})
 	return updated, err
+}
+
+// TransitionInTransaction runs the guarded cue state migration inside a caller
+// owned transaction that locks the referenced devices, so a cue lock and a
+// device maintenance freeze can never both commit.
+func (r *CueDefinitionRepository) TransitionInTransaction(tx *gorm.DB, id uint, expectedVersion uint, from, to constants.CueStatus, reviewerID *uint, note string, event audit.Event) (model.CueDefinition, error) {
+	var updated model.CueDefinition
+	err := r.transitionTx(tx, &updated, id, expectedVersion, from, to, reviewerID, note, event)
+	return updated, err
+}
+
+func (r *CueDefinitionRepository) transitionTx(tx *gorm.DB, updated *model.CueDefinition, id uint, expectedVersion uint, from, to constants.CueStatus, reviewerID *uint, note string, event audit.Event) error {
+	updates := map[string]any{"cue_status": to, "version": expectedVersion + 1, "review_note": note}
+	if to == constants.CueApproved {
+		updates["approved_by"] = reviewerID
+	}
+	if to == constants.CueDraft {
+		updates["approved_by"] = nil
+	}
+	result := tx.Model(&model.CueDefinition{}).Where("id = ? AND version = ? AND cue_status = ?", id, expectedVersion, from).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("transition cue: %w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return util.Conflict("CUE_VERSION_CONFLICT", "cue state or version changed concurrently", nil)
+	}
+	if err := r.audit.WithTx(tx).Record(event); err != nil {
+		return err
+	}
+	if err := tx.First(updated, id).Error; err != nil {
+		return fmt.Errorf("reload transitioned cue: %w", err)
+	}
+	return nil
 }

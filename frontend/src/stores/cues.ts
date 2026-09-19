@@ -35,7 +35,7 @@ export const useCueStore = defineStore('cues', () => {
     return updated
   }
 
-  async function transition(id: number, action: 'submit' | 'approve' | 'reject' | 'lock' | 'archive', version: number, reason: string) {
+  async function transition(id: number, action: 'submit' | 'approve' | 'reject' | 'lock' | 'archive' | 'revise', version: number, reason: string) {
     const updated = await api.transitionCue(id, action, version, reason)
     upsert(updated)
     return updated

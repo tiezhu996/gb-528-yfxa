@@ -292,3 +292,7 @@ code, pre { font-family: "SFMono-Regular", Consolas, monospace; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.freeze-section { margin: 10px 0 4px; display: flex; flex-direction: column; gap: 6px; }
+.freeze-section strong { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.rule-reference em.blocker { color: var(--red); font-style: normal; font-weight: 700; font-size: 0.68rem; }

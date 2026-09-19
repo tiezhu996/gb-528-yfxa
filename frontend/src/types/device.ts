@@ -10,6 +10,21 @@ export interface RuleReference {
   rule_version: number
 }
 
+export interface LockedCueReference {
+  id: number
+  cue_code: string
+  sequence_no: number
+  version: number
+}
+
+export interface MaintenanceFreeze {
+  target_status: DeviceStatus
+  blocked: boolean
+  locked_cues: LockedCueReference[]
+  enabled_interlock_rules: RuleReference[]
+  required_actions: string[]
+}
+
 export interface RiggingDevice {
   id: number
   device_code: string
@@ -23,9 +38,10 @@ export interface RiggingDevice {
   device_status: DeviceStatus
   version: number
   applicable_rules: RuleReference[]
+  maintenance_freeze: MaintenanceFreeze
   created_at: string
   updated_at: string
 }
 
-export type CreateDeviceInput = Omit<RiggingDevice, 'id' | 'version' | 'applicable_rules' | 'created_at' | 'updated_at'>
+export type CreateDeviceInput = Omit<RiggingDevice, 'id' | 'version' | 'applicable_rules' | 'maintenance_freeze' | 'created_at' | 'updated_at'>
 export type UpdateDeviceInput = Omit<CreateDeviceInput, 'device_code'> & { version: number }

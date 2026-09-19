@@ -1,29 +1,36 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { Check, Pencil, Plus, RotateCcw, Save } from 'lucide-vue-next'
+import { Check, Pencil, Plus, RotateCcw, Save, ShieldAlert } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import PageHeader from '../components/common/PageHeader.vue'
-import { errorMessage } from '../api/client'
+import { ApiError, errorMessage } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
 import { useDeviceStore } from '../stores/devices'
-import type { CreateDeviceInput, DeviceStatus, DeviceType, RiggingDevice } from '../types/device'
+import type { CreateDeviceInput, DeviceStatus, DeviceType, MaintenanceFreeze, RiggingDevice } from '../types/device'
 
 const store = useDeviceStore()
 const { canProgram } = useAuth()
 const selectedId = ref<number | null>(null)
 const saving = ref(false)
 const localError = ref('')
+const freezeBlock = ref<MaintenanceFreeze | null>(null)
 const selected = computed(() => store.items.find((item) => item.id === selectedId.value) ?? null)
+const enteringMaintenance = computed(() => {
+  if (!selected.value) return false
+  return form.device_status === 'inspection_hold' || form.device_status === 'retired'
+})
 const form = reactive({ device_code: '', name: '', device_type: 'motorized_batten' as DeviceType, max_load_kg: 500, max_speed_ms: 0.4, travel_min_m: 4, travel_max_m: 16, safety_zone: 'overstage-c', device_status: 'available' as DeviceStatus })
 
 function reset() {
   selectedId.value = null
+  freezeBlock.value = null
   Object.assign(form, { device_code: '', name: '', device_type: 'motorized_batten', max_load_kg: 500, max_speed_ms: 0.4, travel_min_m: 4, travel_max_m: 16, safety_zone: 'overstage-c', device_status: 'available' })
   localError.value = ''
 }
 
 function edit(item: RiggingDevice) {
   selectedId.value = item.id
+  freezeBlock.value = null
   Object.assign(form, { device_code: item.device_code, name: item.name, device_type: item.device_type, max_load_kg: item.max_load_kg, max_speed_ms: item.max_speed_ms, travel_min_m: item.travel_min_m, travel_max_m: item.travel_max_m, safety_zone: item.safety_zone, device_status: item.device_status })
 }
 
@@ -31,13 +38,19 @@ function selectDevice(item: RiggingDevice | undefined) {
   if (item) edit(item)
 }
 
+function lockedCueCodes(freeze: MaintenanceFreeze): string {
+  return freeze.locked_cues.map((cue) => cue.cue_code).join(', ')
+}
+
 async function save() {
   if (saving.value) return
   saving.value = true
   localError.value = ''
+  freezeBlock.value = null
   try {
     if (selected.value) {
-      await store.update(selected.value.id, { name: form.name, device_type: form.device_type, max_load_kg: form.max_load_kg, max_speed_ms: form.max_speed_ms, travel_min_m: form.travel_min_m, travel_max_m: form.travel_max_m, safety_zone: form.safety_zone, device_status: form.device_status, version: selected.value.version })
+      const updated = await store.update(selected.value.id, { name: form.name, device_type: form.device_type, max_load_kg: form.max_load_kg, max_speed_ms: form.max_speed_ms, travel_min_m: form.travel_min_m, travel_max_m: form.travel_max_m, safety_zone: form.safety_zone, device_status: form.device_status, version: selected.value.version })
+      Object.assign(form, { device_status: updated.device_status })
       ElMessage.success('Device limits updated and audited')
     } else {
       await store.create({ ...form } as CreateDeviceInput)
@@ -46,6 +59,17 @@ async function save() {
     }
   } catch (cause) {
     localError.value = errorMessage(cause)
+    if (cause instanceof ApiError && cause.code === 'DEVICE_MAINTENANCE_BLOCKED') {
+      const details = (cause.details ?? {}) as Partial<MaintenanceFreeze>
+      freezeBlock.value = {
+        target_status: (details.target_status as DeviceStatus) ?? form.device_status,
+        blocked: true,
+        locked_cues: details.locked_cues ?? [],
+        enabled_interlock_rules: details.enabled_interlock_rules ?? [],
+        required_actions: details.required_actions ?? [],
+      }
+      await store.load().catch(() => undefined)
+    }
   } finally {
     saving.value = false
   }
@@ -69,6 +93,7 @@ onMounted(() => store.load().catch(() => undefined))
         <el-table-column label="Load / speed" min-width="145"><template #default="scope">{{ scope.row.max_load_kg }} kg<div class="subtle">{{ scope.row.max_speed_ms }} m/s</div></template></el-table-column>
         <el-table-column prop="safety_zone" label="Safety zone" min-width="130" />
         <el-table-column label="Rules" width="86"><template #default="scope"><el-tag effect="plain">{{ scope.row.applicable_rules.length }}</el-tag></template></el-table-column>
+        <el-table-column label="Freeze" width="92"><template #default="scope"><el-tooltip v-if="scope.row.maintenance_freeze?.blocked" :content="`Blocked by locked cue(s): ${lockedCueCodes(scope.row.maintenance_freeze)}`" placement="top"><el-tag type="danger" effect="dark"><ShieldAlert :size="13" style="vertical-align: -2px" /> {{ scope.row.maintenance_freeze.locked_cues.length }}</el-tag></el-tooltip><span v-else class="subtle">clear</span></template></el-table-column>
         <el-table-column label="Status" width="130"><template #default="scope"><span class="plain-status" :class="scope.row.device_status">{{ scope.row.device_status.replaceAll('_', ' ') }}</span></template></el-table-column>
         <el-table-column v-if="canProgram" width="56"><template #default="scope"><el-button circle text :icon="Pencil" title="Edit device limits" @click.stop="edit(scope.row)" /></template></el-table-column>
       </el-table>
@@ -88,6 +113,43 @@ onMounted(() => store.load().catch(() => undefined))
       <template v-else>
         <div class="read-only-note">Safety reviewers can inspect device limits and applicable rules. Device model changes require a programmer or administrator.</div>
       </template>
+      <div v-if="selected" class="rule-index">
+        <p class="eyebrow">PRE-MAINTENANCE SAFETY FREEZE</p>
+        <el-alert
+          v-if="selected.maintenance_freeze.blocked"
+          type="error"
+          :closable="false"
+          show-icon
+          title="Maintenance / retirement is blocked"
+          :description="`Lock references must be cleared before this device can enter inspection hold or be retired. Archive each listed cue or revise it into a new draft version.`"
+        />
+        <el-alert
+          v-else-if="enteringMaintenance"
+          type="success"
+          :closable="false"
+          show-icon
+          title="No locked cue references"
+          description="The status change can be committed; enabled rules below are listed for reviewer awareness."
+        />
+        <div class="freeze-section">
+          <strong>Referencing locked cues ({{ selected.maintenance_freeze.locked_cues.length }})</strong>
+          <div v-if="selected.maintenance_freeze.locked_cues.length === 0" class="empty-inline">None — the freeze can proceed.</div>
+          <div v-for="cue in selected.maintenance_freeze.locked_cues" :key="cue.id" class="rule-reference"><em class="blocker">LOCKED</em><strong>#{{ cue.sequence_no }} · {{ cue.cue_code }}</strong><span>version {{ cue.version }}</span></div>
+        </div>
+        <div class="freeze-section">
+          <strong>Enabled interlock rules ({{ selected.maintenance_freeze.enabled_interlock_rules.length }})</strong>
+          <div v-if="selected.maintenance_freeze.enabled_interlock_rules.length === 0" class="empty-inline">No enabled rule scopes this device.</div>
+          <div v-for="rule in selected.maintenance_freeze.enabled_interlock_rules" :key="rule.id" class="rule-reference"><strong>{{ rule.rule_code }}</strong><span>{{ rule.rule_type.replaceAll('_', ' ') }} · v{{ rule.rule_version }}</span><em :class="rule.severity">{{ rule.severity }}</em></div>
+        </div>
+      </div>
+      <div v-if="freezeBlock" class="rule-index">
+        <el-alert type="error" :closable="false" show-icon title="Rejected: resolve these references first">
+          <template #default>
+            <p>The status was <strong>not</strong> changed — there is no half update. Resolve on the Cue desk, then retry with the same version.</p>
+            <p v-for="cue in freezeBlock.locked_cues" :key="cue.id"><strong>{{ cue.cue_code }}</strong> (#{{ cue.sequence_no }}, v{{ cue.version }})</p>
+          </template>
+        </el-alert>
+      </div>
       <div v-if="selected" class="rule-index">
         <p class="eyebrow">APPLICABLE RULES</p>
         <div v-if="selected.applicable_rules.length === 0" class="empty-inline">No scoped rules.</div>

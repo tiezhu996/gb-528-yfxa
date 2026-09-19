@@ -36,7 +36,7 @@ docker compose down -v --remove-orphans
 
 ## 主要功能
 
-- `RiggingDevice`：设备代码、类型、载荷/速度/行程、安全区、状态和乐观锁版本；设备页同时展示适用规则。
+- `RiggingDevice`：设备代码、类型、载荷/速度/行程、安全区、状态和乐观锁版本；设备页同时展示适用规则与维护前安全冻结（阻塞的锁定 Cue 编号和启用联锁规则编号）。
 - `CueDefinition`：序号、绝对起始时间、时长、动作 JSON、依赖 JSON、创建人、批准人和完整状态流。
 - `InterlockRule`：负载、速度、行程、安全区互斥和依赖间隔五类规则，保存设备范围、结构化阈值、严重度、启停与规则版本。
 - `RehearsalRun`：不可覆盖的 Cue/规则版本快照、动作时间线、规则结果、碰撞窗口、最高严重度与人工复核记录。
@@ -67,11 +67,22 @@ docker compose down -v --remove-orphans
 
 ```text
 draft -> pending_review -> approved -> locked -> archived
-             |               |
-             +----> draft <---+
+             |               |             |
+             +----> draft <--+----> draft -+
 ```
 
-批准、退回和锁定只能由 `safety_reviewer` 或 `admin` 执行。只有 `locked` Cue 版本可进入推演。
+批准、退回和锁定只能由 `safety_reviewer` 或 `admin` 执行。只有 `locked` Cue 版本可进入推演。`locked -> draft` 是“建立新版本”出口（`POST /api/v1/cues/:id/revise`，复核员权限）：锁定行回到可编辑草稿、版本号递增、清空批准人；这与归档（`archive`）一起，是设备维护前解除锁定引用的仅有的两种方式。历史推演快照保存的是当时的 Cue/规则/设备版本，不受该迁移影响。
+
+### 设备维护前的安全冻结
+
+设备从 `available` 转为 `inspection_hold`（维护）或 `retired`（停用）前触发安全冻结：
+
+- 后端在**同一事务**内先对设备行加锁（PostgreSQL `SELECT ... FOR UPDATE`，SQLite 单连接串行），再读取引用该设备的全部 `locked` Cue 与**启用**联锁规则。
+- 存在任何 `locked` Cue 即直接拒绝，返回 `409 DEVICE_MAINTENANCE_BLOCKED`，`error.details.locked_cues`/`locked_cue_codes` 给出每个阻塞 Cue 的编号、序号和版本；设备状态与版本保持原值，绝不允许“先改状态再补处理”。
+- `details.enabled_interlock_rules` 与设备详情 `maintenance_freeze.enabled_interlock_rules` 列出适用的启用联锁规则编号（列出供复核判断，不单独硬阻断）。
+- 必须先将相关 Cue **归档**或通过 **revise 建立新版本**（并在新版本中移除/更换设备）后，维护才能提交成功。
+- 设备与 Cue 的并发变更使用统一锁序（按设备 id 升序锁行）：Cue `approve -> locked` 在同事务内锁定其全部动作设备并复核全部 `available`，否则返回 `CUE_DEVICE_UNAVAILABLE`。因此维护冻结与 Cue 锁定恰好只有一个能提交，失败方整事务回滚，不留半更新。
+- 设备页列表新增 Freeze 列，详情面板展示“维护前安全冻结”：阻塞的锁定 Cue 编号、启用联锁规则编号、以及解除动作；保存被拒绝时在原位展示拒绝原因。仅修改限制参数（状态保持 `available`）不触发冻结。
 
 `InterlockResult = pass | warning | blocker | invalid`
 
@@ -91,6 +102,7 @@ draft -> pending_review -> approved -> locked -> archived
 | `GET/POST` | `/api/v1/cues` | Cue 列表、创建草稿 |
 | `GET/PUT` | `/api/v1/cues/:id` | Cue 详情、草稿动作更新 |
 | `POST` | `/api/v1/cues/:id/{submit,approve,reject,lock,archive}` | 事务化 Cue 状态迁移 |
+| `POST` | `/api/v1/cues/:id/revise` | 复核员将锁定 Cue 转为新草稿版本（维护解冻出口） |
 | `GET/POST` | `/api/v1/rules` | 规则列表、创建规则 |
 | `GET/PUT` | `/api/v1/rules/:id` | 规则详情、版本化阈值更新 |
 | `POST` | `/api/v1/rules/:id/toggle` | 复核员启停规则 |
@@ -102,7 +114,7 @@ draft -> pending_review -> approved -> locked -> archived
 | `GET` | `/api/v1/rehearsals/:id/compare?other_id=` | 比较两个运行版本 |
 | `GET` | `/api/v1/audit-events` | 复核员读取追加式审计事件 |
 
-统一响应包含 `data`（列表另含 `meta`）和 `request_id`；错误包含 `error.code`、`error.message`、可选 `error.details` 与 `request_id`。主要错误码包括 `CUE_DEPENDENCY_CYCLE`、`MISSING_CUE_DEPENDENCY`、`DUPLICATE_CUE_SEQUENCE`、`ACTION_OUT_OF_CUE_BOUNDS`、`CUE_NOT_LOCKED`、`BLOCKER_RUN_NOT_APPROVABLE`、各实体版本冲突、`AUTH_REQUIRED` 与 `FORBIDDEN`。
+统一响应包含 `data`（列表另含 `meta`）和 `request_id`；错误包含 `error.code`、`error.message`、可选 `error.details` 与 `request_id`。主要错误码包括 `CUE_DEPENDENCY_CYCLE`、`MISSING_CUE_DEPENDENCY`、`DUPLICATE_CUE_SEQUENCE`、`ACTION_OUT_OF_CUE_BOUNDS`、`CUE_NOT_LOCKED`、`BLOCKER_RUN_NOT_APPROVABLE`、`DEVICE_MAINTENANCE_BLOCKED`（维护冻结被锁定 Cue 阻塞，详情含 `locked_cues` 与 `enabled_interlock_rules` 编号）、`CUE_DEVICE_UNAVAILABLE`（在维护/停用设备上锁定 Cue）、各实体版本冲突、`AUTH_REQUIRED` 与 `FORBIDDEN`。
 
 ## 技术栈与结构
 
@@ -162,6 +174,8 @@ docker compose config --quiet
 - 返回 `CUE_NOT_LOCKED`：所选 Cue 仍是草稿、待审或仅批准状态，需安全复核员锁定该明确版本。
 - 返回 `BLOCKER_RUN_NOT_SUBMITTABLE`：打开推演证据表，按规则编号、设备和时间窗口修正新 Cue 版本；历史运行不会被覆盖。
 - 返回 409 版本冲突：刷新实体后基于最新 `version` 或 `rule_version` 重试，不要复用旧表单版本。
+- 返回 `DEVICE_MAINTENANCE_BLOCKED`：查看 `error.details.locked_cues` 的 Cue 编号；先由复核员在 Cue 页归档这些 Cue，或用 **New draft version（revise）** 建立不含该设备的新版本，再重新提交维护/停用。设备状态在拒绝期间不会改变。
+- 返回 `CUE_DEVICE_UNAVAILABLE`：Cue 动作仍引用处于 `inspection_hold`/`retired` 的设备；在新草稿版本中更换设备，或先恢复设备为 `available` 后再锁定。
 
 ## License
 

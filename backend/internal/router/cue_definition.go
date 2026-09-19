@@ -16,4 +16,5 @@ func RegisterCueDefinitionRoutes(group *gin.RouterGroup, h *handler.CueDefinitio
 	group.POST("/cues/:id/reject", review, h.Reject)
 	group.POST("/cues/:id/lock", review, h.Lock)
 	group.POST("/cues/:id/archive", review, h.Archive)
+	group.POST("/cues/:id/revise", review, h.Revise)
 }

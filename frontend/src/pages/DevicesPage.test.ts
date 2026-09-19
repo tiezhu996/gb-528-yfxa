@@ -50,4 +50,52 @@ describe('DevicesPage actions', () => {
 
     expect(deviceAPI.createDevice).toHaveBeenCalledTimes(1)
   })
+
+  it('shows the pre-maintenance freeze reason with the locked cue code', async () => {
+    deviceAPI.listDevices.mockResolvedValue([
+      {
+        id: 4,
+        device_code: 'HOIST-FRZ-09',
+        name: 'Freeze test hoist',
+        device_type: 'point_hoist',
+        max_load_kg: 500,
+        max_speed_ms: 0.5,
+        travel_min_m: 2,
+        travel_max_m: 12,
+        safety_zone: 'zone-x',
+        device_status: 'available',
+        version: 1,
+        applicable_rules: [],
+        maintenance_freeze: {
+          target_status: 'inspection_hold',
+          blocked: true,
+          locked_cues: [{ id: 40, cue_code: 'Q-FRZ-090', sequence_no: 90, version: 3 }],
+          enabled_interlock_rules: [],
+          required_actions: ['archive_locked_cue', 'revise_locked_cue_to_new_version'],
+        },
+        created_at: '2026-08-22T00:00:00Z',
+        updated_at: '2026-08-22T00:00:00Z',
+      },
+    ])
+    const wrapper = mount(DevicesPage, {
+      global: {
+        plugins: [createPinia()],
+        config: { warnHandler: () => undefined },
+        stubs: {
+          'el-table': {
+            props: ['data'],
+            template: '<div><slot /><button v-for="row in data" :key="row.id" class="select-row" @click="$emit(\'current-change\', row)">select</button></div>',
+          },
+          'el-table-column': { template: '<span />' },
+        },
+      },
+    })
+    await flushPromises()
+    await wrapper.find('.select-row').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Q-FRZ-090')
+    expect(wrapper.text()).toContain('Referencing locked cues (1)')
+    expect(wrapper.find('.rule-reference .blocker').exists()).toBe(true)
+  })
 })

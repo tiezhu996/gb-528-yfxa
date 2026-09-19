@@ -13,6 +13,6 @@ export async function updateCue(id: number, input: UpdateCueInput): Promise<CueD
   return (await api<CueDefinition>(`/cues/${id}`, json('PUT', input))).data
 }
 
-export async function transitionCue(id: number, action: 'submit' | 'approve' | 'reject' | 'lock' | 'archive', version: number, reason: string): Promise<CueDefinition> {
+export async function transitionCue(id: number, action: 'submit' | 'approve' | 'reject' | 'lock' | 'archive' | 'revise', version: number, reason: string): Promise<CueDefinition> {
   return (await api<CueDefinition>(`/cues/${id}/${action}`, json('POST', { version, reason }))).data
 }

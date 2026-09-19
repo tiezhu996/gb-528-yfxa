@@ -13,6 +13,7 @@ func TestCueTransitions(t *testing.T) {
 		{"review reject", CuePendingReview, CueDraft, true},
 		{"lock approved", CueApproved, CueLocked, true},
 		{"archive locked", CueLocked, CueArchived, true},
+		{"revise locked into new draft", CueLocked, CueDraft, true},
 		{"skip review", CueDraft, CueApproved, false},
 		{"unlock", CueLocked, CueApproved, false},
 		{"leave archive", CueArchived, CueDraft, false},

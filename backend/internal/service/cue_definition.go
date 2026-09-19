@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"stage-rigging-cue-interlock/backend/internal/audit"
@@ -13,15 +14,17 @@ import (
 	"stage-rigging-cue-interlock/backend/internal/util"
 
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 type CueDefinitionService struct {
+	db      *gorm.DB
 	cues    *repository.CueDefinitionRepository
 	devices *repository.RiggingDeviceRepository
 }
 
-func NewCueDefinitionService(cues *repository.CueDefinitionRepository, devices *repository.RiggingDeviceRepository) *CueDefinitionService {
-	return &CueDefinitionService{cues: cues, devices: devices}
+func NewCueDefinitionService(db *gorm.DB, cues *repository.CueDefinitionRepository, devices *repository.RiggingDeviceRepository) *CueDefinitionService {
+	return &CueDefinitionService{db: db, cues: cues, devices: devices}
 }
 
 func (s *CueDefinitionService) List(page, pageSize int, status, search string) ([]dto.CueDefinitionResponse, int64, error) {
@@ -110,12 +113,68 @@ func (s *CueDefinitionService) Transition(id uint, request dto.CueTransitionRequ
 		reviewerID = &actor.ID
 	}
 	before := util.SummaryJSON(map[string]any{"cue_status": from, "version": current.Version, "approved_by": current.ApprovedBy})
-	after := util.SummaryJSON(map[string]any{"cue_status": target, "version": request.Version + 1, "review_reason": request.Reason, "reviewer_id": reviewerID})
-	updated, err := s.cues.Transition(id, request.Version, from, target, reviewerID, strings.TrimSpace(request.Reason), audit.NewEvent(actor, "cue_definition.transition", "cue_definition", id, before, after))
+	note := strings.TrimSpace(request.Reason)
+	after := util.SummaryJSON(map[string]any{"cue_status": target, "version": request.Version + 1, "review_reason": note, "reviewer_id": reviewerID})
+	event := audit.NewEvent(actor, "cue_definition.transition", "cue_definition", id, before, after)
+
+	var updated model.CueDefinition
+	if target == constants.CueLocked {
+		updated, err = s.lockWithDeviceGuard(id, request.Version, from, reviewerID, note, event, current.ActionsJSON)
+	} else {
+		updated, err = s.runTransition(id, request.Version, from, target, reviewerID, note, event)
+	}
 	if err != nil {
 		return dto.CueDefinitionResponse{}, err
 	}
 	return dto.CueFromModel(updated)
+}
+
+// runTransition executes a non-locking state migration in one transaction.
+func (s *CueDefinitionService) runTransition(id uint, expectedVersion uint, from, target constants.CueStatus, reviewerID *uint, note string, event audit.Event) (model.CueDefinition, error) {
+	var updated model.CueDefinition
+	err := repository.RunInTransaction(s.db, func(tx *gorm.DB) error {
+		var inner error
+		updated, inner = s.cues.WithTx(tx).TransitionInTransaction(tx, id, expectedVersion, from, target, reviewerID, note, event)
+		return inner
+	})
+	return updated, err
+}
+
+// lockWithDeviceGuard closes the device maintenance race: every device used by
+// the cue is locked in id order and re-checked as available inside the same
+// transaction that performs the cue lock. A concurrent freeze either wins
+// (this guard sees inspection_hold/retired and rejects) or waits on the device
+// row and then rejects via its own locked-cue scan, so no half update remains.
+func (s *CueDefinitionService) lockWithDeviceGuard(id uint, expectedVersion uint, from constants.CueStatus, reviewerID *uint, note string, event audit.Event, actionsJSON datatypes.JSON) (model.CueDefinition, error) {
+	var updated model.CueDefinition
+	err := repository.RunInTransaction(s.db, func(tx *gorm.DB) error {
+		actions := []dto.CueAction{}
+		if err := json.Unmarshal(actionsJSON, &actions); err != nil {
+			return fmt.Errorf("decode cue actions for lock guard: %w", err)
+		}
+		deviceIDs := make([]uint, 0, len(actions))
+		for _, action := range actions {
+			deviceIDs = append(deviceIDs, action.DeviceID)
+		}
+		lockedDevices, err := s.devices.WithTx(tx).LockByIDs(tx, deviceIDs)
+		if err != nil {
+			return err
+		}
+		unavailable := make([]string, 0)
+		for _, device := range lockedDevices {
+			if device.DeviceStatus != "available" {
+				unavailable = append(unavailable, fmt.Sprintf("%s(%s)", device.DeviceCode, device.DeviceStatus))
+			}
+		}
+		sort.Strings(unavailable)
+		if len(unavailable) > 0 {
+			return util.Unprocessable("CUE_DEVICE_UNAVAILABLE", "the cue can only be locked while every referenced device is available", map[string]any{"unavailable_devices": unavailable})
+		}
+		var inner error
+		updated, inner = s.cues.WithTx(tx).TransitionInTransaction(tx, id, expectedVersion, from, constants.CueLocked, reviewerID, note, event)
+		return inner
+	})
+	return updated, err
 }
 
 func (s *CueDefinitionService) validateCueInput(selfID uint, duration int64, actions []dto.CueAction, dependencyIDs []uint) error {

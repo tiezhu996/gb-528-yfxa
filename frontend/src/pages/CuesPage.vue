@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ArrowRight, CheckCircle2, LockKeyhole, Pencil, Plus, RotateCcw, Save, Trash2, Undo2 } from 'lucide-vue-next'
+import { ArrowRight, CheckCircle2, FilePlus2, LockKeyhole, Pencil, Plus, RotateCcw, Save, Trash2, Undo2 } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import PageHeader from '../components/common/PageHeader.vue'
 import CueStatusBadge from '../components/common/CueStatusBadge.vue'
@@ -70,7 +70,7 @@ async function save() {
   }
 }
 
-async function transition(action: 'submit' | 'approve' | 'reject' | 'lock' | 'archive') {
+async function transition(action: 'submit' | 'approve' | 'reject' | 'lock' | 'archive' | 'revise') {
   if (!selected.value) return
   localError.value = ''
   try {
@@ -132,7 +132,9 @@ onMounted(async () => {
           <el-button v-if="canReview && selected.cue_status === 'pending_review'" :icon="Undo2" @click="transition('reject')">Return to draft</el-button>
           <el-button v-if="canReview && selected.cue_status === 'approved'" type="primary" :icon="LockKeyhole" @click="transition('lock')">Lock version</el-button>
           <el-button v-if="canReview && selected.cue_status === 'locked'" :icon="LockKeyhole" @click="transition('archive')">Archive</el-button>
+          <el-button v-if="canReview && selected.cue_status === 'locked'" :icon="FilePlus2" @click="transition('revise')">New draft version</el-button>
         </div>
+        <p v-if="canReview && selected.cue_status === 'locked'" class="boundary-copy">A locked cue blocks maintenance on every device it uses. Archive it or create a new draft version before the device can enter inspection hold or be retired.</p>
         <p class="boundary-copy">Approval and lock apply only to this offline cue version. They do not release or command machinery.</p>
       </div>
     </aside>

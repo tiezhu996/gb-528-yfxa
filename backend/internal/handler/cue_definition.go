@@ -79,6 +79,11 @@ func (h *CueDefinitionHandler) Reject(c *gin.Context)  { h.transition(c, constan
 func (h *CueDefinitionHandler) Lock(c *gin.Context)    { h.transition(c, constants.CueLocked) }
 func (h *CueDefinitionHandler) Archive(c *gin.Context) { h.transition(c, constants.CueArchived) }
 
+// Revise turns a locked cue version into a new editable draft without changing
+// its identity, which is one of the two ways a locked reference is cleared so
+// a referenced device can enter maintenance.
+func (h *CueDefinitionHandler) Revise(c *gin.Context) { h.transition(c, constants.CueDraft) }
+
 func (h *CueDefinitionHandler) transition(c *gin.Context, target constants.CueStatus) {
 	id, err := util.ParseID(c, "id")
 	if err != nil {

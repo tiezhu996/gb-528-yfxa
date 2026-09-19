@@ -10,11 +10,13 @@ const (
 	CueArchived      CueStatus = "archived"
 )
 
+// A locked cue can be archived or turned into a new draft version (revise) so
+// that a referenced device can enter maintenance only after the lock is gone.
 var cueTransitions = map[CueStatus]map[CueStatus]bool{
 	CueDraft:         {CuePendingReview: true},
 	CuePendingReview: {CueApproved: true, CueDraft: true},
 	CueApproved:      {CueLocked: true, CueDraft: true},
-	CueLocked:        {CueArchived: true},
+	CueLocked:        {CueArchived: true, CueDraft: true},
 	CueArchived:      {},
 }
 
