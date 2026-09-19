@@ -10,6 +10,21 @@ export interface RuleReference {
   rule_version: number
 }
 
+export interface CueReference {
+  id: number
+  cue_code: string
+  sequence_no: number
+  version: number
+}
+
+export interface DeviceFreezeReport {
+  device_id: number
+  device_code: string
+  blocked: boolean
+  locked_cues: CueReference[]
+  enabled_rules: RuleReference[]
+}
+
 export interface RiggingDevice {
   id: number
   device_code: string

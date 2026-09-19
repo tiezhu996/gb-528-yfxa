@@ -22,6 +22,10 @@ func NewCueDefinitionRepository(db *gorm.DB, auditRepository *audit.Repository) 
 	return &CueDefinitionRepository{db: db, audit: auditRepository}
 }
 
+func (r *CueDefinitionRepository) WithTx(tx *gorm.DB) *CueDefinitionRepository {
+	return &CueDefinitionRepository{db: tx, audit: r.audit}
+}
+
 func (r *CueDefinitionRepository) List(page, pageSize int, status, search string) ([]model.CueDefinition, int64, error) {
 	query := r.db.Model(&model.CueDefinition{})
 	if status != "" {
@@ -64,6 +68,17 @@ func (r *CueDefinitionRepository) ByIDs(ids []uint) ([]model.CueDefinition, erro
 	return items, nil
 }
 
+// ListLocked returns every locked cue. Device references live inside the
+// JSONB action snapshot, so callers decode and filter in Go to keep the
+// check identical on PostgreSQL and SQLite.
+func (r *CueDefinitionRepository) ListLocked() ([]model.CueDefinition, error) {
+	var items []model.CueDefinition
+	if err := r.db.Where("cue_status = ?", constants.CueLocked).Order("sequence_no ASC, cue_code ASC").Find(&items).Error; err != nil {
+		return nil, fmt.Errorf("list locked cues: %w", err)
+	}
+	return items, nil
+}
+
 func (r *CueDefinitionRepository) Create(item *model.CueDefinition, event audit.Event) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(item).Error; err != nil {
@@ -95,7 +110,7 @@ func (r *CueDefinitionRepository) Update(item *model.CueDefinition, expectedVers
 	})
 }
 
-func (r *CueDefinitionRepository) Transition(id uint, expectedVersion uint, from, to constants.CueStatus, reviewerID *uint, note string, event audit.Event) (model.CueDefinition, error) {
+func (r *CueDefinitionRepository) Transition(id uint, expectedVersion uint, from, to constants.CueStatus, reviewerID *uint, note string, guard Guard, event audit.Event) (model.CueDefinition, error) {
 	var updated model.CueDefinition
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		updates := map[string]any{"cue_status": to, "version": expectedVersion + 1, "review_note": note}
@@ -111,6 +126,11 @@ func (r *CueDefinitionRepository) Transition(id uint, expectedVersion uint, from
 		}
 		if result.RowsAffected != 1 {
 			return util.Conflict("CUE_VERSION_CONFLICT", "cue state or version changed concurrently", nil)
+		}
+		if guard != nil {
+			if err := guard(tx); err != nil {
+				return err
+			}
 		}
 		if err := r.audit.WithTx(tx).Record(event); err != nil {
 			return err

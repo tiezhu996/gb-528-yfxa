@@ -96,6 +96,10 @@ code, pre { font-family: "SFMono-Regular", Consolas, monospace; }
 .el-form-item__label { color: #35413e !important; font-size: .72rem !important; font-weight: 700; }
 .el-button { font-weight: 650; }
 .read-only-note { margin-top: 18px; padding: 16px; color: var(--muted); background: #edf1ef; border-left: 3px solid var(--blue); font-size: .83rem; line-height: 1.5; }
+.freeze-panel { display: grid; gap: 6px; margin-top: 18px; padding: 14px 16px; background: var(--amber-soft); border-left: 3px solid var(--amber); font-size: .83rem; line-height: 1.5; }
+.freeze-panel p { margin: 0; color: var(--muted); }
+.freeze-panel strong { font-size: .86rem; }
+.freeze-panel .freeze-copy { font-size: .78rem; }
 
 .plain-status { display: inline-flex; align-items: center; width: fit-content; padding: 3px 7px; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--muted); font-size: .7rem; font-weight: 750; text-transform: uppercase; }
 .plain-status.available { color: #155b43; background: #e0eee7; border-color: #88b9a4; }

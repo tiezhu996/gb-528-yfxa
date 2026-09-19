@@ -39,6 +39,20 @@ func (h *RiggingDeviceHandler) Get(c *gin.Context) {
 	util.OK(c, item)
 }
 
+func (h *RiggingDeviceHandler) MaintenanceCheck(c *gin.Context) {
+	id, err := util.ParseID(c, "id")
+	if err != nil {
+		util.Fail(c, err)
+		return
+	}
+	report, err := h.service.MaintenanceCheck(id)
+	if err != nil {
+		util.Fail(c, err)
+		return
+	}
+	util.OK(c, report)
+}
+
 func (h *RiggingDeviceHandler) Create(c *gin.Context) {
 	var request dto.CreateRiggingDeviceRequest
 	if err := c.ShouldBindJSON(&request); err != nil {

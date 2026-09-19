@@ -39,6 +39,24 @@ type RuleReference struct {
 	RuleVersion uint   `json:"rule_version"`
 }
 
+type CueReference struct {
+	ID         uint   `json:"id"`
+	CueCode    string `json:"cue_code"`
+	SequenceNo int    `json:"sequence_no"`
+	Version    uint   `json:"version"`
+}
+
+// DeviceFreezeReport is the maintenance pre-check for a device: every locked
+// cue and enabled interlock rule that still references it. Locked cues block
+// any transition into inspection_hold or retired.
+type DeviceFreezeReport struct {
+	DeviceID     uint            `json:"device_id"`
+	DeviceCode   string          `json:"device_code"`
+	Blocked      bool            `json:"blocked"`
+	LockedCues   []CueReference  `json:"locked_cues"`
+	EnabledRules []RuleReference `json:"enabled_rules"`
+}
+
 type RiggingDeviceResponse struct {
 	ID              uint            `json:"id"`
 	DeviceCode      string          `json:"device_code"`

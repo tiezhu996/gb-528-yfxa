@@ -2,10 +2,11 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import * as api from '../api/devices'
 import { errorMessage } from '../api/client'
-import type { CreateDeviceInput, RiggingDevice, UpdateDeviceInput } from '../types/device'
+import type { CreateDeviceInput, DeviceFreezeReport, RiggingDevice, UpdateDeviceInput } from '../types/device'
 
 export const useDeviceStore = defineStore('devices', () => {
   const items = ref<RiggingDevice[]>([])
+  const freezeReports = ref<Record<number, DeviceFreezeReport>>({})
   const loading = ref(false)
   const error = ref('')
 
@@ -22,6 +23,12 @@ export const useDeviceStore = defineStore('devices', () => {
     }
   }
 
+  async function loadFreezeReport(id: number) {
+    const report = await api.fetchMaintenanceCheck(id)
+    freezeReports.value = { ...freezeReports.value, [id]: report }
+    return report
+  }
+
   async function create(input: CreateDeviceInput) {
     const created = await api.createDevice(input)
     items.value = [...items.value, created].sort((a, b) => a.device_code.localeCompare(b.device_code))
@@ -34,5 +41,5 @@ export const useDeviceStore = defineStore('devices', () => {
     return updated
   }
 
-  return { items, loading, error, load, create, update }
+  return { items, freezeReports, loading, error, load, loadFreezeReport, create, update }
 })

@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"stage-rigging-cue-interlock/backend/internal/audit"
@@ -10,7 +11,12 @@ import (
 	"stage-rigging-cue-interlock/backend/internal/util"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
+
+// Guard runs inside an update transaction; a non-nil error aborts the whole
+// transaction so a rejected change never leaves a partial update behind.
+type Guard func(tx *gorm.DB) error
 
 type RiggingDeviceRepository struct {
 	db    *gorm.DB
@@ -19,6 +25,10 @@ type RiggingDeviceRepository struct {
 
 func NewRiggingDeviceRepository(db *gorm.DB, auditRepository *audit.Repository) *RiggingDeviceRepository {
 	return &RiggingDeviceRepository{db: db, audit: auditRepository}
+}
+
+func (r *RiggingDeviceRepository) WithTx(tx *gorm.DB) *RiggingDeviceRepository {
+	return &RiggingDeviceRepository{db: tx, audit: r.audit}
 }
 
 func (r *RiggingDeviceRepository) List(page, pageSize int, status, search string) ([]model.RiggingDevice, int64, error) {
@@ -74,6 +84,35 @@ func (r *RiggingDeviceRepository) ByIDs(ids []uint) ([]model.RiggingDevice, erro
 	return items, nil
 }
 
+// LockByIDs loads devices one row at a time in ascending ID order, taking
+// FOR UPDATE row locks on PostgreSQL so a device maintenance transition and a
+// cue lock that touch the same rows serialize against each other. SQLite
+// relies on its single-writer connection pool and skips the locking clause.
+func (r *RiggingDeviceRepository) LockByIDs(ids []uint) ([]model.RiggingDevice, error) {
+	unique := uniqueIDs(ids)
+	sorted := make([]uint, 0, len(unique))
+	for id := range unique {
+		sorted = append(sorted, id)
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	items := make([]model.RiggingDevice, 0, len(sorted))
+	for _, id := range sorted {
+		var item model.RiggingDevice
+		query := r.db
+		if query.Dialector.Name() == "postgres" {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := query.First(&item, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, util.Unprocessable("DEVICE_REFERENCE_INVALID", "one or more referenced devices do not exist", map[string]any{"requested_ids": ids})
+			}
+			return nil, fmt.Errorf("lock rigging device %d: %w", id, err)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func (r *RiggingDeviceRepository) Create(item *model.RiggingDevice, event audit.Event) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(item).Error; err != nil {
@@ -90,8 +129,19 @@ func (r *RiggingDeviceRepository) Create(item *model.RiggingDevice, event audit.
 	})
 }
 
-func (r *RiggingDeviceRepository) Update(item *model.RiggingDevice, expectedVersion uint, event audit.Event) error {
+// UpdateGuarded applies a device update inside one transaction: the device
+// row is locked first, then the guard runs, then the optimistic version
+// update and audit event are written. Any guard error rolls everything back.
+func (r *RiggingDeviceRepository) UpdateGuarded(item *model.RiggingDevice, expectedVersion uint, guard Guard, event audit.Event) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if _, err := r.WithTx(tx).LockByIDs([]uint{item.ID}); err != nil {
+			return err
+		}
+		if guard != nil {
+			if err := guard(tx); err != nil {
+				return err
+			}
+		}
 		updates := map[string]any{"name": item.Name, "device_type": item.DeviceType, "max_load_kg": item.MaxLoadKG, "max_speed_ms": item.MaxSpeedMS, "travel_min_m": item.TravelMinM, "travel_max_m": item.TravelMaxM, "safety_zone": item.SafetyZone, "device_status": item.DeviceStatus, "version": expectedVersion + 1}
 		result := tx.Model(&model.RiggingDevice{}).Where("id = ? AND version = ?", item.ID, expectedVersion).Updates(updates)
 		if result.Error != nil {

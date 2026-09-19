@@ -53,7 +53,7 @@ func main() {
 	runRepository := repository.NewRehearsalRunRepository(db, auditRepository)
 
 	authService := auth.NewService(authRepository, cfg.JWTSecret, cfg.JWTTTL)
-	deviceService := service.NewRiggingDeviceService(deviceRepository, ruleRepository)
+	deviceService := service.NewRiggingDeviceService(deviceRepository, cueRepository, ruleRepository)
 	cueService := service.NewCueDefinitionService(cueRepository, deviceRepository)
 	ruleService := service.NewInterlockRuleService(ruleRepository, deviceRepository)
 	runService := service.NewRehearsalRunService(runRepository, cueRepository, deviceRepository, ruleRepository, cfg.TimelineStepMS, cfg.MaxCuesPerRun)

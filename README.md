@@ -36,7 +36,7 @@ docker compose down -v --remove-orphans
 
 ## 主要功能
 
-- `RiggingDevice`：设备代码、类型、载荷/速度/行程、安全区、状态和乐观锁版本；设备页同时展示适用规则。
+- `RiggingDevice`：设备代码、类型、载荷/速度/行程、安全区、状态和乐观锁版本；设备页同时展示适用规则。设备转入 `inspection_hold` 或 `retired` 前执行维护冻结预检：列出仍引用它的锁定 Cue 与启用联锁规则，存在锁定 Cue 时整体拒绝并指出 Cue 编号，须先归档相关 Cue 或建立不含该设备的新 Cue 版本；状态迁移与 Cue 锁定在同一事务内互斥，失败不留半更新。
 - `CueDefinition`：序号、绝对起始时间、时长、动作 JSON、依赖 JSON、创建人、批准人和完整状态流。
 - `InterlockRule`：负载、速度、行程、安全区互斥和依赖间隔五类规则，保存设备范围、结构化阈值、严重度、启停与规则版本。
 - `RehearsalRun`：不可覆盖的 Cue/规则版本快照、动作时间线、规则结果、碰撞窗口、最高严重度与人工复核记录。
@@ -88,6 +88,7 @@ draft -> pending_review -> approved -> locked -> archived
 | `POST` | `/api/v1/auth/login` | 种子账号登录并签发 JWT |
 | `GET/POST` | `/api/v1/devices` | 设备列表、创建设备模型 |
 | `GET/PUT` | `/api/v1/devices/:id` | 设备详情、版本化限制更新 |
+| `GET` | `/api/v1/devices/:id/maintenance-check` | 维护冻结预检：列出引用设备的锁定 Cue 与启用规则 |
 | `GET/POST` | `/api/v1/cues` | Cue 列表、创建草稿 |
 | `GET/PUT` | `/api/v1/cues/:id` | Cue 详情、草稿动作更新 |
 | `POST` | `/api/v1/cues/:id/{submit,approve,reject,lock,archive}` | 事务化 Cue 状态迁移 |
@@ -102,7 +103,7 @@ draft -> pending_review -> approved -> locked -> archived
 | `GET` | `/api/v1/rehearsals/:id/compare?other_id=` | 比较两个运行版本 |
 | `GET` | `/api/v1/audit-events` | 复核员读取追加式审计事件 |
 
-统一响应包含 `data`（列表另含 `meta`）和 `request_id`；错误包含 `error.code`、`error.message`、可选 `error.details` 与 `request_id`。主要错误码包括 `CUE_DEPENDENCY_CYCLE`、`MISSING_CUE_DEPENDENCY`、`DUPLICATE_CUE_SEQUENCE`、`ACTION_OUT_OF_CUE_BOUNDS`、`CUE_NOT_LOCKED`、`BLOCKER_RUN_NOT_APPROVABLE`、各实体版本冲突、`AUTH_REQUIRED` 与 `FORBIDDEN`。
+统一响应包含 `data`（列表另含 `meta`）和 `request_id`；错误包含 `error.code`、`error.message`、可选 `error.details` 与 `request_id`。主要错误码包括 `CUE_DEPENDENCY_CYCLE`、`MISSING_CUE_DEPENDENCY`、`DUPLICATE_CUE_SEQUENCE`、`ACTION_OUT_OF_CUE_BOUNDS`、`CUE_NOT_LOCKED`、`BLOCKER_RUN_NOT_APPROVABLE`、`DEVICE_MAINTENANCE_BLOCKED`（409，维护冻结拒绝，`details` 含锁定 Cue 编号与启用规则）、`DEVICE_UNDER_MAINTENANCE`（422，设备维护/停用期间禁止锁定引用它的 Cue）、各实体版本冲突、`AUTH_REQUIRED` 与 `FORBIDDEN`。
 
 ## 技术栈与结构
 
@@ -160,6 +161,8 @@ docker compose config --quiet
 - Compose 服务未变为 healthy：执行 `docker compose logs db backend frontend`，优先检查 PostgreSQL DSN、JWT 密钥长度和 Nginx 代理。
 - 返回 `CUE_DEPENDENCY_CYCLE`：查看 `error.details.evidence_path`，它包含闭合循环路径；修改草稿依赖并重新走复核/锁定。
 - 返回 `CUE_NOT_LOCKED`：所选 Cue 仍是草稿、待审或仅批准状态，需安全复核员锁定该明确版本。
+- 返回 `DEVICE_MAINTENANCE_BLOCKED`：设备仍有锁定 Cue 引用，`error.details.locked_cues` 列出 Cue 编号、`enabled_rules` 列出启用规则；先由复核员归档这些 Cue（或建立不含该设备的新 Cue 版本），再重试维护/停用。设备页会同步显示该阻塞原因。
+- 返回 `DEVICE_UNDER_MAINTENANCE`：目标设备处于 `inspection_hold` 或 `retired`，引用它的 Cue 不能锁定；先将设备恢复为 `available` 或改选其他设备。
 - 返回 `BLOCKER_RUN_NOT_SUBMITTABLE`：打开推演证据表，按规则编号、设备和时间窗口修正新 Cue 版本；历史运行不会被覆盖。
 - 返回 409 版本冲突：刷新实体后基于最新 `version` 或 `rule_version` 重试，不要复用旧表单版本。
 

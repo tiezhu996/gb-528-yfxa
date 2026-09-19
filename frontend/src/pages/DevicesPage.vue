@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Check, Pencil, Plus, RotateCcw, Save } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import PageHeader from '../components/common/PageHeader.vue'
-import { errorMessage } from '../api/client'
+import { ApiError, errorMessage } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
 import { useDeviceStore } from '../stores/devices'
-import type { CreateDeviceInput, DeviceStatus, DeviceType, RiggingDevice } from '../types/device'
+import type { CreateDeviceInput, DeviceFreezeReport, DeviceStatus, DeviceType, RiggingDevice } from '../types/device'
 
 const store = useDeviceStore()
 const { canProgram } = useAuth()
@@ -14,6 +14,7 @@ const selectedId = ref<number | null>(null)
 const saving = ref(false)
 const localError = ref('')
 const selected = computed(() => store.items.find((item) => item.id === selectedId.value) ?? null)
+const freezeReport = computed(() => (selectedId.value != null ? store.freezeReports[selectedId.value] : undefined))
 const form = reactive({ device_code: '', name: '', device_type: 'motorized_batten' as DeviceType, max_load_kg: 500, max_speed_ms: 0.4, travel_min_m: 4, travel_max_m: 16, safety_zone: 'overstage-c', device_status: 'available' as DeviceStatus })
 
 function reset() {
@@ -46,10 +47,20 @@ async function save() {
     }
   } catch (cause) {
     localError.value = errorMessage(cause)
+    if (cause instanceof ApiError && cause.code === 'DEVICE_MAINTENANCE_BLOCKED') {
+      const report = cause.details as DeviceFreezeReport | undefined
+      const codes = report?.locked_cues?.map((cue) => cue.cue_code) ?? []
+      if (codes.length > 0) localError.value = `${localError.value} · locked cues: ${codes.join(', ')}`
+      if (selectedId.value != null) await store.loadFreezeReport(selectedId.value).catch(() => undefined)
+    }
   } finally {
     saving.value = false
   }
 }
+
+watch(selectedId, (id) => {
+  if (id != null) store.loadFreezeReport(id).catch(() => undefined)
+})
 
 onMounted(() => store.load().catch(() => undefined))
 </script>
@@ -75,6 +86,13 @@ onMounted(() => store.load().catch(() => undefined))
     </section>
     <aside class="editor-panel">
       <div class="section-heading"><div><p class="eyebrow">{{ selected ? `REVISION ${selected.version}` : 'NEW RECORD' }}</p><h2>{{ selected ? selected.device_code : 'Device envelope' }}</h2></div><el-button v-if="selected" circle text :icon="RotateCcw" title="Clear selection" @click="reset" /></div>
+      <div v-if="selected && freezeReport?.blocked" class="freeze-panel">
+        <p class="eyebrow">MAINTENANCE FREEZE</p>
+        <strong>Inspection hold and retirement are blocked for {{ selected.device_code }}.</strong>
+        <p>Locked cues referencing this device: <b>{{ freezeReport.locked_cues.map((cue) => cue.cue_code).join(', ') }}</b></p>
+        <p v-if="freezeReport.enabled_rules.length">Enabled rules in scope: {{ freezeReport.enabled_rules.map((rule) => rule.rule_code).join(', ') }}</p>
+        <p class="freeze-copy">Archive each locked cue or cut a new cue version without this device, then save the status change again. Historical rehearsal runs and audit records stay untouched.</p>
+      </div>
       <template v-if="canProgram">
         <el-form label-position="top">
           <div class="form-grid two"><el-form-item label="Device code"><el-input v-model="form.device_code" :disabled="Boolean(selected)" placeholder="BATTEN-04" /></el-form-item><el-form-item label="Name"><el-input v-model="form.name" /></el-form-item></div>

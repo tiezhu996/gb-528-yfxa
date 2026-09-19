@@ -2,6 +2,12 @@ package model
 
 import "time"
 
+const (
+	DeviceStatusAvailable      = "available"
+	DeviceStatusInspectionHold = "inspection_hold"
+	DeviceStatusRetired        = "retired"
+)
+
 type RiggingDevice struct {
 	ID           uint    `gorm:"primaryKey"`
 	DeviceCode   string  `gorm:"size:48;uniqueIndex;not null"`

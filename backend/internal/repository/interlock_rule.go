@@ -21,6 +21,10 @@ func NewInterlockRuleRepository(db *gorm.DB, auditRepository *audit.Repository) 
 	return &InterlockRuleRepository{db: db, audit: auditRepository}
 }
 
+func (r *InterlockRuleRepository) WithTx(tx *gorm.DB) *InterlockRuleRepository {
+	return &InterlockRuleRepository{db: tx, audit: r.audit}
+}
+
 func (r *InterlockRuleRepository) List(page, pageSize int, ruleType, severity, search string) ([]model.InterlockRule, int64, error) {
 	query := r.db.Model(&model.InterlockRule{})
 	if ruleType != "" {

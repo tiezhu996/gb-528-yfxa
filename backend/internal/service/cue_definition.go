@@ -13,6 +13,7 @@ import (
 	"stage-rigging-cue-interlock/backend/internal/util"
 
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 type CueDefinitionService struct {
@@ -105,17 +106,55 @@ func (s *CueDefinitionService) Transition(id uint, request dto.CueTransitionRequ
 	if !constants.CanTransitionCue(from, target) {
 		return dto.CueDefinitionResponse{}, util.Unprocessable("INVALID_CUE_TRANSITION", fmt.Sprintf("cannot transition cue from %s to %s", from, target), map[string]any{"from": from, "to": target})
 	}
+	// A cue may only lock while every referenced device is available. The
+	// check runs inside the transition transaction and locks the device rows,
+	// so a concurrent maintenance freeze and a cue lock cannot both commit.
+	var guard repository.Guard
+	if target == constants.CueLocked {
+		deviceIDs, err := cueDeviceIDs(current)
+		if err != nil {
+			return dto.CueDefinitionResponse{}, err
+		}
+		guard = func(tx *gorm.DB) error {
+			devices, lockErr := s.devices.WithTx(tx).LockByIDs(deviceIDs)
+			if lockErr != nil {
+				return lockErr
+			}
+			unavailable := []map[string]any{}
+			for _, device := range devices {
+				if device.DeviceStatus != model.DeviceStatusAvailable {
+					unavailable = append(unavailable, map[string]any{"device_code": device.DeviceCode, "device_status": device.DeviceStatus})
+				}
+			}
+			if len(unavailable) > 0 {
+				return util.Unprocessable("DEVICE_UNDER_MAINTENANCE", "cue cannot lock while a referenced device is under maintenance or retired", map[string]any{"cue_code": current.CueCode, "devices": unavailable})
+			}
+			return nil
+		}
+	}
 	var reviewerID *uint
 	if target == constants.CueApproved {
 		reviewerID = &actor.ID
 	}
 	before := util.SummaryJSON(map[string]any{"cue_status": from, "version": current.Version, "approved_by": current.ApprovedBy})
 	after := util.SummaryJSON(map[string]any{"cue_status": target, "version": request.Version + 1, "review_reason": request.Reason, "reviewer_id": reviewerID})
-	updated, err := s.cues.Transition(id, request.Version, from, target, reviewerID, strings.TrimSpace(request.Reason), audit.NewEvent(actor, "cue_definition.transition", "cue_definition", id, before, after))
+	updated, err := s.cues.Transition(id, request.Version, from, target, reviewerID, strings.TrimSpace(request.Reason), guard, audit.NewEvent(actor, "cue_definition.transition", "cue_definition", id, before, after))
 	if err != nil {
 		return dto.CueDefinitionResponse{}, err
 	}
 	return dto.CueFromModel(updated)
+}
+
+func cueDeviceIDs(cue model.CueDefinition) ([]uint, error) {
+	actions := []dto.CueAction{}
+	if err := json.Unmarshal(cue.ActionsJSON, &actions); err != nil {
+		return nil, fmt.Errorf("decode cue %s actions: %w", cue.CueCode, err)
+	}
+	ids := make([]uint, 0, len(actions))
+	for _, action := range actions {
+		ids = append(ids, action.DeviceID)
+	}
+	return ids, nil
 }
 
 func (s *CueDefinitionService) validateCueInput(selfID uint, duration int64, actions []dto.CueAction, dependencyIDs []uint) error {
@@ -136,7 +175,7 @@ func (s *CueDefinitionService) validateCueInput(selfID uint, duration int64, act
 		return err
 	}
 	for _, device := range devices {
-		if device.DeviceStatus == "retired" {
+		if device.DeviceStatus == model.DeviceStatusRetired {
 			return util.Unprocessable("DEVICE_UNAVAILABLE", "retired devices cannot be added to a cue", map[string]any{"device_code": device.DeviceCode})
 		}
 	}

@@ -9,6 +9,7 @@ import (
 func RegisterRiggingDeviceRoutes(group *gin.RouterGroup, h *handler.RiggingDeviceHandler, write gin.HandlerFunc) {
 	group.GET("/devices", h.List)
 	group.GET("/devices/:id", h.Get)
+	group.GET("/devices/:id/maintenance-check", h.MaintenanceCheck)
 	group.POST("/devices", write, h.Create)
 	group.PUT("/devices/:id", write, h.Update)
 }
